@@ -215,9 +215,6 @@ void (function () {
                 ? document.body.classList.replace('light-theme', 'dark-theme')
                 : document.body.classList.replace('dark-theme', 'light-theme')
               if (site.plotly) Object.keys(site.plotly).forEach(k => update_plot_theme(site.plotly[k].u))
-              if (site.table) {
-                Object.keys(site.table).forEach(k => update_table_theme(site.table[k].u))
-              }
               if (site.map)
                 Object.keys(site.map).forEach(k => {
                   const u = site.map[k].u
@@ -2804,6 +2801,7 @@ void (function () {
                 const row = this.e.querySelector(`[data-geoid='${e.features.id}']`)
                 if (row) {
                   row.style.backgroundColor = defaults.background_highlight
+                  row.children[0].style['backgroundColor'] = defaults.background_highlight
                   if (site.settings.table_autoscroll) {
                     const h = this.e.parentElement.getBoundingClientRect().height,
                       top = row.getBoundingClientRect().y - row.parentElement.getBoundingClientRect().y
@@ -2819,7 +2817,94 @@ void (function () {
               const existing_geoids = Object.keys(this.rows)
               if (e.features && existing_geoids.includes(e.features.id)) {
                 const row = this.e.querySelector(`[data-geoid='${e.features.id}']`)
-                if (row) row.style.backgroundColor = 'inherit'
+                if (row) {
+                  row.style.removeProperty('background-color')
+                  row.children[0].style['backgroundColor'] = `var(--background-border)`
+                }
+              }
+            }
+
+            o.destroyTable = function () {
+              while (this.e.firstChild) {
+                this.e.removeChild(this.e.lastChild)
+              }
+            }
+
+            o.clearTable = table => {
+              for (const el of table.childNodes) {
+                if (el.tagName == 'TBODY')
+                  while (el.firstChild) {
+                    el.removeChild(el.lastChild)
+                  }
+              }
+            }
+
+            o.createTable = function (table) {
+              this.clearTable(table)
+              let headers = this.header.map(h => h.title)
+              let thead = document.createElement('thead')
+              let tr = document.createElement('tr')
+
+              for (let i = 0; i < headers.length; i++) {
+                if (this.hiddenTimes.includes(headers[i])) continue
+                const th = document.createElement('th')
+                const div = document.createElement('div')
+                div.innerText = headers[i]
+                if (headers[i] == this.time) div.style['border'] = 'solid black'
+                div.dataset.dir = ''
+                th.append(div)
+                tr.append(th)
+              }
+
+              thead.append(tr)
+              table.append(thead)
+              let tBody = document.createElement('tbody')
+              table.append(tBody)
+            }
+
+            o.prepareData = function (v, tableData, vn) {
+              const dataset = v.get.dataset()
+              const time = site.data.meta.times[dataset]
+              const source = v.selection.all
+              for (const key in source) {
+                //const countyName = source[key].features.name
+                tableData[key] = {}
+                const code = source[key].variables[vn].code
+                const t = site.data.variables[vn].time_range[dataset]
+                if (t)
+                  for (let n = t[1] - t[0]; n >= 0; n--) {
+                    const title = time.value[n + t[0]] + ''
+                    if (Object.keys(source[key].data).includes(code))
+                      if (typeof source[key].data[code] == 'number') tableData[key][title] = source[key].data[code]
+                      else tableData[key][title] = source[key].data[code][n]
+                  }
+              }
+
+              for (let key in tableData) {
+                if (Object.keys(tableData[key]).length == 0) delete tableData[key]
+              }
+            }
+
+            o.appendRows = function (table, v, vn) {
+              const tableData = {}
+              this.prepareData(v, tableData, vn)
+              Object.assign(this.rows, tableData)
+              let tableData_sorted = Object.entries(tableData).sort(([, a], [, b]) => -(a[time] - b[time]))
+              for (var i = 0; i < tableData_sorted.length; i++) {
+                let tr = document.createElement('tr')
+                tr.style.cursor = 'pointer'
+                let td = document.createElement('td')
+                td.innerText = v.selection.all[tableData_sorted[i][0]].features.name
+                tr.append(td)
+                tr.dataset.geoid = tableData_sorted[i][0]
+                for (let t in tableData_sorted[i][1]) {
+                  if (this.hiddenTimes.includes(t)) continue
+                  td = document.createElement('td')
+                  td.innerText = site.data.format_value(tableData_sorted[i][1][t])
+                  tr.append(td)
+                }
+
+                table.querySelector('tbody').append(tr)
               }
             }
             o.options.variable_source = o.options.variables
@@ -2969,16 +3054,9 @@ void (function () {
                 if (state !== this.state) {
                   this.rows = {}
                   this.rowIds = {}
-                  const clearTable = table => {
-                    for (const el of table.childNodes) {
-                      if (el.tagName == 'TBODY')
-                        while (el.firstChild) {
-                          el.removeChild(el.lastChild)
-                        }
-                    }
-                    // while (table.childNodes && table.childNodes.length > 1) table.removeChild(table.lastChild)
-                  }
-                  clearTable(this.table)
+                  this.destroyTable.bind(this)
+                  this.clearTable.bind(this)
+                  this.clearTable(this.table)
                   let redraw = true
                   if (v.selection) {
                     this.state = state
@@ -3002,12 +3080,7 @@ void (function () {
                         (this.time && this.time !== valueOf(v.time_agg))
                       ) {
                         this.time = valueOf(v.time_agg)
-                        const destroyTable = () => {
-                          while (this.e.firstChild) {
-                            this.e.removeChild(this.e.lastChild)
-                          }
-                        }
-                        destroyTable()
+                        this.destroyTable()
                         this.header = [{title: 'Name', data: 'entity.features.name'}]
                         if (-1 !== this.parsed.time_range[0]) {
                           for (let n = this.parsed.time_range[2]; n--; ) {
@@ -3028,33 +3101,6 @@ void (function () {
                         } else this.state = ''
                         this.options.order[0][0] = this.header.length - 1
                         this.options.columns = this.header
-                        this.sortTable = e => {
-                          let tableData = this.rows
-                          const direction = e.target.dataset.dir == 'desc' ? 'asc' : 'desc'
-                          const param = e.target.innerText
-                          direction == 'asc'
-                            ? tableData.sort(function (a, b) {
-                                if (a[param] < b[param]) {
-                                  return -1
-                                }
-                                if (a[param] > b[param]) {
-                                  return 1
-                                }
-                                return 0
-                              })
-                            : tableData.sort(function (a, b) {
-                                if (b[param] < a[param]) {
-                                  return -1
-                                }
-                                if (b[param] > a[param]) {
-                                  return 1
-                                }
-                                return 0
-                              })
-
-                          this.rows = tableData
-                          appendRows(this.table)
-                        }
                         this.hiddenTimes = []
                         for (let t = 0; t <= site.data.meta.times[d].value.length; t++) {
                           if (v.times[t] === false) {
@@ -3062,89 +3108,14 @@ void (function () {
                             this.hiddenTimes.push(year.toString())
                           }
                         }
-
-                        const createTable = table => {
-                          clearTable(table)
-                          let headers = this.header.map(h => h.title)
-                          let thead = document.createElement('thead')
-                          let tr = document.createElement('tr')
-
-                          for (let i = 0; i < headers.length; i++) {
-                            if (this.hiddenTimes.includes(headers[i])) continue
-                            const th = document.createElement('th')
-                            const div = document.createElement('div')
-                            div.innerText = headers[i]
-                            if (headers[i] == this.time) div.style['border'] = 'solid black'
-                            div.dataset.dir = ''
-                            th.append(div)
-                            tr.append(th)
-                          }
-
-                          thead.append(tr)
-                          table.append(thead)
-                          let tBody = document.createElement('tbody')
-                          table.append(tBody)
-                        }
-                        createTable(this.table)
+                        this.createTable(this.table)
                       }
-
                       let reset
-
                       if (reset) this.state = ''
                     }
                     if (this.options.wide) {
-                      const tableData = {}
-
-                      const prepareData = () => {
-                        const dataset = d
-                        const time = site.data.meta.times[dataset]
-                        const source = v.selection.all
-                        for (const key in source) {
-                          //const countyName = source[key].features.name
-                          tableData[key] = {}
-                          const code = source[key].variables[vn].code
-                          const t = site.data.variables[vn].time_range[dataset]
-                          if (t)
-                            for (let n = t[1] - t[0]; n >= 0; n--) {
-                              const title = time.value[n + t[0]] + ''
-                              if (Object.keys(source[key].data).includes(code))
-                                if (typeof source[key].data[code] == 'number')
-                                  tableData[key][title] = source[key].data[code]
-                                else tableData[key][title] = source[key].data[code][n]
-                            }
-                        }
-
-                        for (let key in tableData) {
-                          if (Object.keys(tableData[key]).length == 0) delete tableData[key]
-                        }
-                      }
-
-                      const appendRows = table => {
-                        prepareData()
-                        Object.assign(this.rows, tableData)
-                        let tableData_sorted = Object.entries(tableData).sort(([, a], [, b]) => -(a[time] - b[time]))
-                        for (var i = 0; i < tableData_sorted.length; i++) {
-                          let tr = document.createElement('tr')
-                          tr.style.cursor = 'pointer'
-                          let td = document.createElement('td')
-                          td.innerText = v.selection.all[tableData_sorted[i][0]].features.name
-
-                          tr.append(td)
-
-                          tr.dataset.geoid = tableData_sorted[i][0]
-                          tr.style['backgroundColor'] = 'inherit'
-
-                          for (let t in tableData_sorted[i][1]) {
-                            if (this.hiddenTimes.includes(t)) continue
-                            td = document.createElement('td')
-                            td.innerText = site.data.format_value(tableData_sorted[i][1][t])
-                            tr.append(td)
-                          }
-
-                          table.querySelector('tbody').append(tr)
-                        }
-                      }
-                      appendRows(this.table)
+                      this.appendRows.bind(this)
+                      this.appendRows(this.table, v, vn)
                     } else {
                       Object.keys(this.filters).forEach(f => {
                         this.current_filter[c] = valueOf(f)
@@ -3231,7 +3202,7 @@ void (function () {
             if (e.target.tagName == 'TD' && e.target.parentElement.tagName == 'TR') {
               const parent = e.target.parentElement
               const id = parseInt(parent.dataset.geoid)
-              parent.style['backgroundColor'] = 'inherit'
+              parent.style.removeProperty('background-color')
               parent.children[0].style['backgroundColor'] = `var(--background-border)`
               if (id in site.data.entities) {
                 update_subs(this.id, 'revert', site.data.entities[id])
@@ -4287,15 +4258,6 @@ void (function () {
         u.style.xaxis.font.color = s.color
         u.style.yaxis.font.color = s.color
         Plotly.relayout(u.e, u.options.layout)
-      }
-    }
-
-    function update_table_theme(u, table) {
-      if (u.dark_theme !== site.site.settings.theme_dark) {
-        u.dark_theme = site.site.settings.theme_dark
-        if (u.dark_theme == true) {
-        }
-        //TODO: Need to add relevant code here and make sure that site.datk_theme is set before
       }
     }
 
